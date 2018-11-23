@@ -2,11 +2,11 @@
 #pragma once
 
 #include "assembler/sparsity_pattern.hpp"
-#include "numeric/float_compare.hpp"
 #include "exceptions.hpp"
 #include "numeric/sparse_matrix.hpp"
 #include "solver/adaptive_time_step.hpp"
 #include "solver/linear/linear_solver_factory.hpp"
+#include "assembler/residual_control.hpp"
 #include "io/json.hpp"
 
 #include <chrono>
@@ -54,14 +54,6 @@ protected:
     /// Move the nodes on the mesh for the Dirichlet boundary
     void apply_displacement_boundaries();
 
-    /// Equilibrium iteration convergence criteria
-    bool is_iteration_converged() const;
-
-    /// Pretty printer for the convergence of the Newton-Raphson solver
-    void print_convergence_progress() const;
-
-    void update_relative_norms();
-
 private:
     void perform_equilibrium_iterations();
 
@@ -72,16 +64,6 @@ protected:
 
     /// Cache the sparsity pattern
     bool is_sparsity_computed{false};
-    /// Flag for norm computation
-    bool use_relative_norm{true};
-
-    double residual_tolerance{1.0e-3};
-    double displacement_tolerance{1.0e-3};
-
-    double displacement_norm;
-    double force_norm;
-    /// Norm of the residual vector at the first iteration
-    double norm_initial_residual = 1;
 
     /// Maximum number of Newton Raphson iterations before cutback
     int maximum_iterations = 10;
@@ -102,35 +84,23 @@ protected:
     vector minus_residual;
 
     std::unique_ptr<linear_solver> solver;
+
+    residual_control control;
 };
 
 template <class MeshType>
 static_matrix<MeshType>::static_matrix(mesh_type& fem_mesh, json const& simulation)
     : fem_mesh(fem_mesh),
       adaptive_load(simulation["time"], fem_mesh.time_history()),
-      solver(make_linear_solver(simulation["linear_solver"], fem_mesh.is_symmetric()))
+      solver(make_linear_solver(simulation["linear_solver"], fem_mesh.is_symmetric())),
+      control(simulation["nonlinear_options"])
 {
     auto const& nonlinear_options = simulation["nonlinear_options"];
 
-    if (nonlinear_options.find("displacement_tolerance") == nonlinear_options.end())
-    {
-        throw std::domain_error("displacement_tolerance not specified in nonlinear_options");
-    }
-    if (nonlinear_options.find("residual_tolerance") == nonlinear_options.end())
-    {
-        throw std::domain_error("residual_tolerance not specified in nonlinear_options");
-    }
-    if (nonlinear_options.find("newton_raphson_iterations") != nonlinear_options.end())
+    if (nonlinear_options.find("newton_raphson_iterations") != end(nonlinear_options))
     {
         maximum_iterations = nonlinear_options["newton_raphson_iterations"];
     }
-    if (nonlinear_options.find("absolute_tolerance") != nonlinear_options.end())
-    {
-        use_relative_norm = false;
-    }
-
-    residual_tolerance = nonlinear_options["residual_tolerance"];
-    displacement_tolerance = nonlinear_options["displacement_tolerance"];
 
     f_int = f_ext = displacement = displacement_old = delta_d = vector::Zero(fem_mesh.active_dofs());
 
@@ -348,61 +318,8 @@ void static_matrix<MeshType>::apply_displacement_boundaries()
 }
 
 template <class MeshType>
-bool static_matrix<MeshType>::is_iteration_converged() const
-{
-    return displacement_norm <= displacement_tolerance && force_norm <= residual_tolerance;
-}
-
-template <class MeshType>
-void static_matrix<MeshType>::print_convergence_progress() const
-{
-    std::cout << std::string(6, ' ') << termcolor::bold;
-    if (displacement_norm <= displacement_tolerance)
-    {
-        std::cout << termcolor::green;
-    }
-    else
-    {
-        std::cout << termcolor::yellow;
-    }
-    std::cout << "Incremental displacement norm " << displacement_norm << "\n"
-              << termcolor::reset << std::string(6, ' ');
-
-    if (force_norm <= residual_tolerance)
-    {
-        std::cout << termcolor::green;
-    }
-    else
-    {
-        std::cout << termcolor::yellow;
-    }
-    std::cout << termcolor::bold << "Residual force norm " << force_norm << termcolor::reset << "\n";
-}
-
-template <class MeshType>
-void static_matrix<MeshType>::update_relative_norms()
-{
-    if (use_relative_norm)
-    {
-        displacement_norm = delta_d.norm() / displacement.norm();
-        force_norm = is_approx(std::max(f_ext.norm(), f_int.norm()), 0.0)
-                         ? 1.0
-                         : minus_residual.norm()
-                               / std::max(norm_initial_residual,
-                                          std::max(f_ext.norm(), f_int.norm()));
-    }
-    else
-    {
-        displacement_norm = delta_d.norm();
-        force_norm = minus_residual.norm();
-    }
-}
-
-template <class MeshType>
 void static_matrix<MeshType>::perform_equilibrium_iterations()
 {
-    displacement = displacement_old;
-
     fem_mesh.update_internal_variables(displacement, adaptive_load.increment());
 
     // Full Newton-Raphson iteration to solve nonlinear equations
@@ -423,7 +340,7 @@ void static_matrix<MeshType>::perform_equilibrium_iterations()
         if (current_iteration == 0)
         {
             apply_displacement_boundaries();
-            norm_initial_residual = minus_residual.norm();
+            control.set_initial_residual(minus_residual.norm());
         }
 
         enforce_dirichlet_conditions(Kt, minus_residual);
@@ -434,16 +351,20 @@ void static_matrix<MeshType>::perform_equilibrium_iterations()
 
         fem_mesh.update_internal_variables(displacement, 0.0);
 
-        update_relative_norms();
+        control.update(displacement.norm(),
+                       delta_d.norm(),
+                       minus_residual.norm(),
+                       f_ext.norm(),
+                       f_int.norm());
 
-        print_convergence_progress();
+        control.print();
 
         auto const end = std::chrono::steady_clock::now();
         std::chrono::duration<double> const elapsed_seconds = end - start;
         std::cout << std::string(6, ' ') << "Equilibrium iteration required "
                   << elapsed_seconds.count() << "s\n";
 
-        if (is_iteration_converged()) break;
+        if (control.is_converged()) break;
 
         current_iteration++;
     }
