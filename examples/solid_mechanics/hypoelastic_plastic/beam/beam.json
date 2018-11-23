@@ -1,15 +1,15 @@
 {
     "name" : "BeamLoad",
-    "Cores" : 4,
-    "Part": [{
+    "cores" : 2,
+    "parts": [{
         "name" : "beam",
-        "Material" : "steel"
+        "material" : "steel"
     }],
-    "Material" : [{
+    "materials" : [{
         "name" : "steel",
-        "elastic_modulus" : 200.0e3,
-        "IsotropicHardeningModulus" : 200.0,
-        "yield_stress" : 200.0,
+        "elastic_modulus" : 200.0e9,
+        "isotropic_hardening_modulus" : 200.0e6,
+        "yield_stress" : 200.0e6,
         "poissons_ratio" : 0.3
     }],
     "steps" : [{
@@ -48,9 +48,9 @@
             },
             {
                 "name" : "load",
-                "type" : "Pressure",
+                "type" : "pressure",
                 "time" : [0.0, 1.0],
-                "Value" : [0.0, 1.0]
+                "value" : [0.0, 1.0e6]
             }],
             "visualisation" : {
                 "fields" : ["displacement", "linearised_strain", "linearised_plastic_strain",
