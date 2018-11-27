@@ -102,7 +102,7 @@ std::pair<index_view, vector const&> submesh::internal_force(std::int32_t const 
                                matrix3 const& cauchy_stress = cauchy_stresses[view(element, index)];
 
                                // symmetric gradient operator
-                               matrix const Bt = dN * jacobian.inverse();
+                               auto const Bt = dN * jacobian.inverse();
 
                                return Bt * cauchy_stress * jacobian.determinant();
                            });
@@ -150,7 +150,7 @@ matrix const& submesh::material_tangent_stiffness(matrix3x const& x, std::int32_
     k_mat.setZero();
     B.setZero();
 
-    sf->quadrature().integrate_inplace(k_mat, [&](auto const& N_dN, auto const l) {
+    sf->quadrature().integrate_inplace(k_mat, [&](auto const& N_dN, auto const l) -> matrix {
         auto const& [N, dN] = N_dN;
 
         matrix6 const& D = tangent_operators[view(element, l)];
@@ -216,24 +216,24 @@ void submesh::update_deformation_measures()
 
     tbb::parallel_for(std::int64_t{0}, elements(), [&](auto const element) {
         // Gather the material coordinates
-        auto const X = coordinates->initial_configuration(local_node_view(element));
-        auto const x = coordinates->current_configuration(local_node_view(element));
+        auto const& X = coordinates->initial_configuration(local_node_view(element));
+        auto const& x = coordinates->current_configuration(local_node_view(element));
 
-        sf->quadrature().for_each([&](auto const& femval, auto const l) {
-            auto const& [N, rhea] = femval;
+        sf->quadrature().for_each([&](auto const& N_dN, auto const index) {
+            auto const& [N, dN] = N_dN;
 
             // Local deformation gradient for the initial configuration
-            matrix3 const F_0 = local_deformation_gradient(rhea, X);
-            matrix3 const F = local_deformation_gradient(rhea, x);
+            matrix3 const F_0 = local_deformation_gradient(dN, X);
+            matrix3 const F = local_deformation_gradient(dN, x);
 
             // Gradient operator in index notation
-            matrixxd<3> const B_0t = rhea * F_0.inverse();
+            matrixxd<3> const B_0t = dN * F_0.inverse();
 
             // Displacement gradient
             matrix3 const H = (x - X) * B_0t;
 
-            displacement_gradients[view(element, l)] = H;
-            deformation_gradients[view(element, l)] = F * F_0.inverse();
+            displacement_gradients[view(element, index)] = H;
+            deformation_gradients[view(element, index)] = F * F_0.inverse();
         });
     });
 }
@@ -259,9 +259,9 @@ void submesh::update_Jacobian_determinants()
                                          end(F_determinants),
                                          [](auto const i) { return std::signbit(i); });
 
-        auto const i = std::distance(begin(F_determinants), found);
+        auto const index = std::distance(begin(F_determinants), found);
 
-        auto const [element, quadrature_point] = std::div(i, sf->quadrature().points());
+        auto const [element, quadrature_point] = std::div(index, sf->quadrature().points());
 
         throw computational_error("Positive Jacobian assumption violated at element "
                                   + std::to_string(element) + " and local quadrature point "
