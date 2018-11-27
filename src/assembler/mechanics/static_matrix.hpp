@@ -133,13 +133,13 @@ void static_matrix<MeshType>::solve()
             perform_equilibrium_iterations();
         }
     }
-    catch (computational_error& comp_error)
+    catch (computational_error& error)
     {
         // A numerical error has been reported that is able to be recovered
-        // by resetting the state
+        // by resetting the state and trying again with a smaller time step
         std::cout << std::endl
-                  << std::string(6, ' ') << termcolor::bold << termcolor::yellow
-                  << comp_error.what() << termcolor::reset << std::endl;
+                  << std::string(6, ' ') << termcolor::bold << termcolor::yellow << error.what()
+                  << termcolor::reset << std::endl;
 
         adaptive_load.update_convergence_state(false);
         fem_mesh.save_internal_variables(false);
@@ -360,29 +360,31 @@ void static_matrix<MeshType>::perform_equilibrium_iterations()
         control.print();
 
         auto const end = std::chrono::steady_clock::now();
+
         std::chrono::duration<double> const elapsed_seconds = end - start;
         std::cout << std::string(6, ' ') << "Equilibrium iteration required "
                   << elapsed_seconds.count() << "s\n";
 
-        if (control.is_converged()) break;
+        if (control.is_converged())
+        {
+            break;
+        }
 
         current_iteration++;
     }
+
     if (current_iteration == maximum_iterations)
     {
         throw computational_error("Reached Newton-Raphson iteration limit");
     }
 
-    if (current_iteration != maximum_iterations)
-    {
-        displacement_old = displacement;
+    displacement_old = displacement;
 
-        adaptive_load.update_convergence_state(current_iteration != maximum_iterations);
-        fem_mesh.save_internal_variables(current_iteration != maximum_iterations);
+    adaptive_load.update_convergence_state(true);
+    fem_mesh.save_internal_variables(true);
 
-        fem_mesh.update_internal_forces(f_int);
+    fem_mesh.update_internal_forces(f_int);
 
-        fem_mesh.write(adaptive_load.step(), adaptive_load.time());
-    }
+    fem_mesh.write(adaptive_load.step(), adaptive_load.time());
 }
 }
